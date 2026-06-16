@@ -34,7 +34,7 @@
   button { margin-top: 18px; font-size: 26px; font-weight: 800; color: #0b1020; background: #ffd24a;
            border: none; border-radius: 16px; padding: 16px 44px; cursor: pointer; box-shadow: 0 6px 0 #c79a16; }
   button:active { transform: translateY(3px); box-shadow: 0 3px 0 #c79a16; }
-  #status { font-size: 15px; opacity: .75; margin-top: 14px; min-height: 20px; }
+  #status { font-size: 15px; opacity: .8; margin-top: 14px; min-height: 20px; }
   .hide { display: none !important; }
 </style>
 </head>
@@ -46,12 +46,12 @@
     <div class="chip" id="score">0</div>
     <div class="chip" id="time">60</div>
   </div>
-  <div id="dbg">손 인식 대기</div>
+  <div id="dbg">대기</div>
   <div id="overlay">
     <div id="panel">
       <h1>🐹 두더지 잡기</h1>
       <div id="bigscore" class="hide"></div>
-      <p id="lead">손으로 튀어나오는 두더지를 빵! 때려요.<br>손이 화면에 잘 보이게 한 발 물러서세요.</p>
+      <p id="lead">손으로 튀어나오는 두더지를 빵! 때려요.<br>온몸이 화면에 보이게 2m쯤 물러서세요.</p>
       <button id="startBtn">시작하기</button>
       <p id="status">시작을 누르면 카메라를 켭니다 (허용 필요)</p>
     </div>
@@ -61,7 +61,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.20.0/dist/tf-core.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.20.0/dist/tf-converter.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.20.0/dist/tf-backend-webgl.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection@2.0.1/dist/hand-pose-detection.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
 <script>
 const video = document.getElementById('cam');
 const cv = document.getElementById('cv');
@@ -77,9 +77,8 @@ const dbg = document.getElementById('dbg');
 
 let detector = null, running = false, score = 0, timeLeft = 60;
 let moles = [], particles = [], lastSpawn = 0, spawnGap = 1100, timerId = null;
-let nHands = 0, fps = 0, lastT = 0;
+let nHands = 0, fps = 0, lastT = 0, modelState = '미로딩';
 const EMOJIS = ['🐹', '🐰', '🐱', '🦔'];
-const TIP_IDX = [9, 4, 8, 12, 16, 20];   // 손바닥(9) + 엄지·검지·중지·약지·새끼 끝
 
 function setStatus(t){ statusEl.textContent = t; }
 
@@ -89,33 +88,34 @@ async function setupCamera(){
   video.srcObject = stream;
   await new Promise(r => video.onloadedmetadata = r);
   await video.play();
-  cv.width = video.videoWidth; cv.height = video.videoHeight;
+  cv.width = video.videoWidth || 640; cv.height = video.videoHeight || 480;
 }
 
 async function loadModel(){
   await tf.setBackend('webgl'); await tf.ready();
-  detector = await handPoseDetection.createDetector(
-    handPoseDetection.SupportedModels.MediaPipeHands,
-    { runtime: 'tfjs', modelType: 'lite', maxHands: 2 });
+  detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,
+    { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING });
+  modelState = 'OK';
 }
 
-// 손가락 21개 → 손바닥+손끝 (px, 거울 x 미러링). big=손바닥
-function getTouchPoints(hands){
-  const pts = [];
-  for (const h of (hands||[])){
-    const kp = h.keypoints; if (!kp) continue;
-    for (const i of TIP_IDX){
-      const p = kp[i]; if (!p) continue;
-      pts.push({ x: cv.width - p.x, y: p.y, big: (i===9) });
-    }
+// 팔꿈치(7/8)→손목(9/10) 방향으로 손끝까지 연장 → 거울 x 미러링
+function getHands(kps){
+  const hands = [];
+  if (!kps) return hands;
+  for (const [ei, wi] of [[7,9],[8,10]]){
+    const w = kps[wi], e = kps[ei];
+    if (!w || w.score < 0.25) continue;
+    let hx = w.x, hy = w.y;
+    if (e && e.score > 0.25){ hx = w.x + (w.x-e.x)*0.6; hy = w.y + (w.y-e.y)*0.6; }
+    hands.push({ x: cv.width - hx, y: hy });
   }
-  return pts;
+  return hands;
 }
 
 function spawnMole(){
   const r = cv.width * 0.085, m = 1.4 * r;
   moles.push({ x: m + Math.random()*(cv.width-2*m), y: m + Math.random()*(cv.height-2*m),
-    r, born: performance.now(), life: 1700, hit: false, emoji: EMOJIS[(Math.random()*EMOJIS.length)|0] });
+    r, born: performance.now(), life: 1800, hit: false, emoji: EMOJIS[(Math.random()*EMOJIS.length)|0] });
 }
 
 function pop(x, y){
@@ -131,17 +131,21 @@ function pop(x, y){
 
 async function loop(){
   if (!running) return;
+  // 카메라(거울)
   ctx.save(); ctx.scale(-1,1); ctx.drawImage(video, -cv.width, 0, cv.width, cv.height); ctx.restore();
 
+  // 손 인식 (모델 있을 때만 — 없어도 게임은 진행)
   let pts = [];
-  try { const hands = await detector.estimateHands(video, { flipHorizontal:false });
-        nHands = hands ? hands.length : 0; pts = getTouchPoints(hands); }
-  catch(e){ dbg.textContent = '인식 오류: ' + (e.message||e).toString().slice(0,40); }
-
+  if (detector){
+    try { const poses = await detector.estimatePoses(video, { flipHorizontal:false });
+          const kps = poses[0] && poses[0].keypoints; pts = getHands(kps); nHands = pts.length; }
+    catch(e){ modelState = '오류:' + (e.message||e).toString().slice(0,30); }
+  }
   const now = performance.now();
-  if (lastT){ fps = Math.round(1000/(now-lastT)); } lastT = now;
-  dbg.textContent = `🖐 ${nHands}손 인식 · ${fps}fps`;
+  if (lastT) fps = Math.round(1000/(now-lastT)); lastT = now;
+  dbg.textContent = `AI ${modelState} · 🖐 ${nHands}손 · ${fps}fps`;
 
+  // 두더지
   if (now - lastSpawn > spawnGap){ spawnMole(); lastSpawn = now; }
   for (const m of moles){
     const age = now - m.born, t = age/m.life;
@@ -149,8 +153,8 @@ async function loop(){
     if (age > m.life) m.dead = true;
     if (!m.hit){
       for (const p of pts){
-        const hr = m.r*Math.max(.5,m.scale) + cv.width*(p.big?0.045:0.022);
-        if (Math.hypot(p.x-m.x, p.y-m.y) < hr){ m.hit=true; m.dead=true; score++; scoreEl.textContent=score; pop(m.x,m.y); break; }
+        if (Math.hypot(p.x-m.x, p.y-m.y) < m.r*Math.max(.5,m.scale) + cv.width*0.06){
+          m.hit=true; m.dead=true; score++; scoreEl.textContent=score; pop(m.x,m.y); break; }
       }
     }
   }
@@ -159,9 +163,8 @@ async function loop(){
   ctx.textAlign='center'; ctx.textBaseline='middle';
   for (const m of moles){ ctx.font = (m.r*2*Math.max(.15,m.scale))+'px serif'; ctx.fillText(m.emoji, m.x, m.y); }
   for (const p of pts){
-    if (p.big){ ctx.beginPath(); ctx.arc(p.x, p.y, cv.width*0.05, 0, 7);
-      ctx.fillStyle='rgba(255,210,74,.30)'; ctx.fill(); ctx.lineWidth=4; ctx.strokeStyle='#ffd24a'; ctx.stroke(); }
-    else { ctx.beginPath(); ctx.arc(p.x, p.y, cv.width*0.018, 0, 7); ctx.fillStyle='#ffd24a'; ctx.fill(); }
+    ctx.beginPath(); ctx.arc(p.x, p.y, cv.width*0.055, 0, 7);
+    ctx.fillStyle='rgba(255,210,74,.30)'; ctx.fill(); ctx.lineWidth=4; ctx.strokeStyle='#ffd24a'; ctx.stroke();
   }
   for (const p of particles){ p.x+=p.vx; p.y+=p.vy; p.vy+=0.25; p.life-=0.04; }
   particles = particles.filter(p=>p.life>0);
@@ -181,14 +184,16 @@ function endGame(){
 async function start(){
   startBtn.disabled = true; setStatus('카메라 켜는 중...');
   try { if (!video.srcObject) await setupCamera(); }
-  catch(e){ setStatus('카메라를 못 켰어요 — 권한 허용 + https 필요. ('+e.name+')'); startBtn.disabled=false; return; }
-  if (!detector){ setStatus('손 인식 AI 로딩 중... (몇 초)'); try { await loadModel(); } catch(e){ setStatus('AI 로딩 실패: '+(e.message||e)); startBtn.disabled=false; return; } }
+  catch(e){ setStatus('카메라 실패 — 권한 허용 + https 필요 ('+e.name+')'); startBtn.disabled=false; return; }
+  // 모델 로딩 — 실패해도 게임은 시작(두더지는 무조건 뜸)
+  if (!detector){ setStatus('AI 로딩 중...');
+    try { await loadModel(); } catch(e){ modelState = '로딩실패'; } }
   score=0; timeLeft=60; moles=[]; particles=[]; lastSpawn=0; spawnGap=1100; lastT=0;
-  scoreEl.textContent=0; timeEl.textContent=60;
+  scoreEl.textContent=0; timeEl.textContent=60; setStatus('');
   overlay.classList.add('hide'); startBtn.disabled=false;
   running = true; requestAnimationFrame(loop);
   timerId = setInterval(()=>{ timeLeft--; timeEl.textContent=timeLeft;
-    if (timeLeft%10===0 && spawnGap>500) spawnGap-=80;
+    if (timeLeft%10===0 && spawnGap>600) spawnGap-=70;
     if (timeLeft<=0) endGame(); }, 1000);
 }
 startBtn.addEventListener('click', start);

@@ -74,7 +74,7 @@ const timeEl = document.getElementById('time');
 const bigscore = document.getElementById('bigscore');
 const lead = document.getElementById('lead');
 const dbg = document.getElementById('dbg');
-const VERSION = 'v9';
+const VERSION = 'v10';
 dbg.textContent = '버전 ' + VERSION + ' · 대기';
 
 let detector = null, running = false, score = 0, timeLeft = 60;
@@ -141,13 +141,24 @@ function noteAt(delay, freq, dur, type, vol){
 // 연속 명중 시 음이 도→레→미↑ 상승(콤보) = 게임 느낌
 const SCALE = [523, 587, 659, 784, 880, 1047, 1175, 1319, 1568, 1760];
 let combo = 0, lastHit = 0;
-function hitSound(){
+function hitSound(){   // 만화풍 두더지게임 "뿅!" (올라갔다 살짝 내려오는 팝)
   const now = performance.now();
   combo = (now - lastHit < 1400) ? combo + 1 : 1; lastHit = now;
-  const f = SCALE[Math.min(combo - 1, SCALE.length - 1)];
-  noteAt(0,    f,       0.11, 'square',   0.28);   // 코인풍 본음
-  noteAt(0.04, f * 1.5, 0.08, 'square',   0.18);   // 화음
-  noteAt(0,    f / 3,   0.05, 'triangle', 0.14);   // 저음 펀치
+  if (!audioCtx) return;
+  try {
+    const t = audioCtx.currentTime;
+    const base = 420 + Math.min(combo, 10) * 35;
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(base, t);
+    o.frequency.exponentialRampToValueAtTime(base * 3.2, t + 0.05);   // 뿅↑
+    o.frequency.exponentialRampToValueAtTime(base * 1.4, t + 0.20);   // 살짝↓
+    o.connect(g); g.connect(audioCtx.destination);
+    g.gain.setValueAtTime(0.38, t);
+    g.gain.exponentialRampToValueAtTime(0.0008, t + 0.22);
+    o.start(t); o.stop(t + 0.24);
+    noteAt(0, base / 2.5, 0.05, 'square', 0.12);                      // 펀치
+  } catch(e){}
 }
 function overSound(){   // 마무리 팡파레(상승 3음)
   noteAt(0,    784,  0.14, 'square', 0.26);

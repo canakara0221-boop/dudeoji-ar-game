@@ -74,6 +74,8 @@ const timeEl = document.getElementById('time');
 const bigscore = document.getElementById('bigscore');
 const lead = document.getElementById('lead');
 const dbg = document.getElementById('dbg');
+const VERSION = 'v8';
+dbg.textContent = '버전 ' + VERSION + ' · 대기';
 
 let detector = null, running = false, score = 0, timeLeft = 60;
 let moles = [], particles = [], lastSpawn = 0, spawnGap = 1100, timerId = null;
@@ -160,7 +162,7 @@ async function loop(){
   }
   const now = performance.now();
   if (lastT) fps = Math.round(1000/(now-lastT)); lastT = now;
-  dbg.textContent = `AI ${modelState} · 🖐 ${nHands}손 · ${fps}fps`;
+  dbg.textContent = `${VERSION} · AI ${modelState} · 🖐 ${nHands}손 · ${fps}fps`;
 
   // 두더지
   if (now - lastSpawn > spawnGap){ spawnMole(); lastSpawn = now; }
@@ -223,8 +225,10 @@ async function start(){
 }
 startBtn.addEventListener('click', start);
 
+// 디버그 중: 캐시 차단 — 기존 서비스워커 전부 제거(옛 버전 캐시 방지)
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));
+  navigator.serviceWorker.getRegistrations()
+    .then(rs => rs.forEach(r => r.unregister())).catch(()=>{});
 }
 </script>
 </body>

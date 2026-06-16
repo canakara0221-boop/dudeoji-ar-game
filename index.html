@@ -160,8 +160,17 @@ async function loop(){
   }
   moles = moles.filter(m => !m.dead);
 
-  ctx.textAlign='center'; ctx.textBaseline='middle';
-  for (const m of moles){ ctx.font = (m.r*2*Math.max(.15,m.scale))+'px serif'; ctx.fillText(m.emoji, m.x, m.y); }
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.globalAlpha = 1;
+  for (const m of moles){
+    const s = Math.max(.15, m.scale);
+    // 굴(밝은 원 + 갈색 테두리) — 배경에 안 묻히게 또렷이
+    ctx.beginPath(); ctx.arc(m.x, m.y, m.r*s*1.08, 0, 7);
+    ctx.fillStyle = '#fff3c4'; ctx.fill();
+    ctx.lineWidth = Math.max(3, cv.width*0.008); ctx.strokeStyle = '#8a5a2b'; ctx.stroke();
+    // 두더지
+    ctx.font = (m.r*1.7*s) + 'px serif';
+    ctx.fillText(m.emoji, m.x, m.y);
+  }
   for (const p of pts){
     ctx.beginPath(); ctx.arc(p.x, p.y, cv.width*0.055, 0, 7);
     ctx.fillStyle='rgba(255,210,74,.30)'; ctx.fill(); ctx.lineWidth=4; ctx.strokeStyle='#ffd24a'; ctx.stroke();

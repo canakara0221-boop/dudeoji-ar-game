@@ -1,0 +1,16 @@
+{
+  "name": "두더지 잡기 — 몸으로 하는 AR 게임",
+  "short_name": "두더지잡기",
+  "description": "카메라로 몸을 인식해 손으로 두더지를 잡는 AR 키즈 게임",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b1020",
+  "theme_color": "#0b1020",
+  "lang": "ko",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

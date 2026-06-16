@@ -1,5 +1,5 @@
 // 두더지 잡기 PWA 서비스워커 — 홈 화면 설치 + 기본 오프라인
-const CACHE = 'dudeoji-v2';
+const CACHE = 'dudeoji-v3';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

@@ -23,6 +23,8 @@
           padding: 6px 18px; border-radius: 999px; }
   #score::before { content: "🐹 "; }
   #time::before  { content: "⏰ "; }
+  #dbg { position: absolute; left: 12px; bottom: 12px; color: #fff; font-size: 14px; font-weight: 700;
+         background: rgba(0,0,0,.5); padding: 5px 12px; border-radius: 10px; pointer-events: none; }
   #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
              background: rgba(8,12,30,.82); backdrop-filter: blur(3px); text-align: center; padding: 24px; }
   #panel { color: #fff; max-width: 440px; }
@@ -44,6 +46,7 @@
     <div class="chip" id="score">0</div>
     <div class="chip" id="time">60</div>
   </div>
+  <div id="dbg">손 인식 대기</div>
   <div id="overlay">
     <div id="panel">
       <h1>🐹 두더지 잡기</h1>
@@ -55,9 +58,11 @@
   </div>
 </div>
 
-<script type="module">
-import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
-
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.20.0/dist/tf-core.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.20.0/dist/tf-converter.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.20.0/dist/tf-backend-webgl.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/hand-pose-detection@2.0.1/dist/hand-pose-detection.min.js"></script>
+<script>
 const video = document.getElementById('cam');
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
@@ -68,9 +73,11 @@ const scoreEl = document.getElementById('score');
 const timeEl = document.getElementById('time');
 const bigscore = document.getElementById('bigscore');
 const lead = document.getElementById('lead');
+const dbg = document.getElementById('dbg');
 
 let detector = null, running = false, score = 0, timeLeft = 60;
 let moles = [], particles = [], lastSpawn = 0, spawnGap = 1100, timerId = null;
+let nHands = 0, fps = 0, lastT = 0;
 const EMOJIS = ['🐹', '🐰', '🐱', '🦔'];
 const TIP_IDX = [9, 4, 8, 12, 16, 20];   // 손바닥(9) + 엄지·검지·중지·약지·새끼 끝
 
@@ -86,28 +93,20 @@ async function setupCamera(){
 }
 
 async function loadModel(){
-  const vision = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-  try {
-    detector = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: "GPU" },
-      runningMode: "VIDEO", numHands: 2 });
-  } catch(e) {   // GPU 실패 시 CPU
-    detector = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: "CPU" },
-      runningMode: "VIDEO", numHands: 2 });
-  }
+  await tf.setBackend('webgl'); await tf.ready();
+  detector = await handPoseDetection.createDetector(
+    handPoseDetection.SupportedModels.MediaPipeHands,
+    { runtime: 'tfjs', modelType: 'lite', maxHands: 2 });
 }
 
-// 실제 손가락 추적 → 손바닥+손끝 좌표 (거울 x 미러링). big=손바닥
-function getTouchPoints(result){
+// 손가락 21개 → 손바닥+손끝 (px, 거울 x 미러링). big=손바닥
+function getTouchPoints(hands){
   const pts = [];
-  if (!result || !result.landmarks) return pts;
-  for (const lm of result.landmarks){
+  for (const h of (hands||[])){
+    const kp = h.keypoints; if (!kp) continue;
     for (const i of TIP_IDX){
-      const p = lm[i];
-      if (!p) continue;
-      pts.push({ x: cv.width - p.x*cv.width, y: p.y*cv.height, big: (i===9) });
+      const p = kp[i]; if (!p) continue;
+      pts.push({ x: cv.width - p.x, y: p.y, big: (i===9) });
     }
   }
   return pts;
@@ -115,17 +114,14 @@ function getTouchPoints(result){
 
 function spawnMole(){
   const r = cv.width * 0.085, m = 1.4 * r;
-  moles.push({
-    x: m + Math.random()*(cv.width-2*m), y: m + Math.random()*(cv.height-2*m),
-    r, born: performance.now(), life: 1700, hit: false,
-    emoji: EMOJIS[(Math.random()*EMOJIS.length)|0] });
+  moles.push({ x: m + Math.random()*(cv.width-2*m), y: m + Math.random()*(cv.height-2*m),
+    r, born: performance.now(), life: 1700, hit: false, emoji: EMOJIS[(Math.random()*EMOJIS.length)|0] });
 }
 
 function pop(x, y){
   for (let i=0;i<10;i++){ const a=Math.random()*Math.PI*2, s=2+Math.random()*5;
     particles.push({ x, y, vx:Math.cos(a)*s, vy:Math.sin(a)*s, life:1 }); }
-  try {
-    const ac = pop.ac || (pop.ac = new (window.AudioContext||window.webkitAudioContext)());
+  try { const ac = pop.ac || (pop.ac = new (window.AudioContext||window.webkitAudioContext)());
     const o = ac.createOscillator(), g = ac.createGain();
     o.frequency.value = 700+Math.random()*300; o.connect(g); g.connect(ac.destination);
     g.gain.setValueAtTime(0.25, ac.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime+0.15);
@@ -133,14 +129,19 @@ function pop(x, y){
   } catch(e){}
 }
 
-function loop(){
+async function loop(){
   if (!running) return;
   ctx.save(); ctx.scale(-1,1); ctx.drawImage(video, -cv.width, 0, cv.width, cv.height); ctx.restore();
 
   let pts = [];
-  try { const res = detector.detectForVideo(video, performance.now()); pts = getTouchPoints(res); } catch(e){}
+  try { const hands = await detector.estimateHands(video, { flipHorizontal:false });
+        nHands = hands ? hands.length : 0; pts = getTouchPoints(hands); }
+  catch(e){ dbg.textContent = '인식 오류: ' + (e.message||e).toString().slice(0,40); }
 
   const now = performance.now();
+  if (lastT){ fps = Math.round(1000/(now-lastT)); } lastT = now;
+  dbg.textContent = `🖐 ${nHands}손 인식 · ${fps}fps`;
+
   if (now - lastSpawn > spawnGap){ spawnMole(); lastSpawn = now; }
   for (const m of moles){
     const age = now - m.born, t = age/m.life;
@@ -149,9 +150,7 @@ function loop(){
     if (!m.hit){
       for (const p of pts){
         const hr = m.r*Math.max(.5,m.scale) + cv.width*(p.big?0.045:0.022);
-        if (Math.hypot(p.x-m.x, p.y-m.y) < hr){
-          m.hit = true; m.dead = true; score++; scoreEl.textContent = score; pop(m.x, m.y); break;
-        }
+        if (Math.hypot(p.x-m.x, p.y-m.y) < hr){ m.hit=true; m.dead=true; score++; scoreEl.textContent=score; pop(m.x,m.y); break; }
       }
     }
   }
@@ -159,16 +158,10 @@ function loop(){
 
   ctx.textAlign='center'; ctx.textBaseline='middle';
   for (const m of moles){ ctx.font = (m.r*2*Math.max(.15,m.scale))+'px serif'; ctx.fillText(m.emoji, m.x, m.y); }
-
-  // 손가락 마커 — 손바닥(큰 원) + 손끝(작은 점)
   for (const p of pts){
-    if (p.big){
-      ctx.beginPath(); ctx.arc(p.x, p.y, cv.width*0.05, 0, 7);
-      ctx.fillStyle='rgba(255,210,74,.30)'; ctx.fill();
-      ctx.lineWidth=4; ctx.strokeStyle='#ffd24a'; ctx.stroke();
-    } else {
-      ctx.beginPath(); ctx.arc(p.x, p.y, cv.width*0.018, 0, 7); ctx.fillStyle='#ffd24a'; ctx.fill();
-    }
+    if (p.big){ ctx.beginPath(); ctx.arc(p.x, p.y, cv.width*0.05, 0, 7);
+      ctx.fillStyle='rgba(255,210,74,.30)'; ctx.fill(); ctx.lineWidth=4; ctx.strokeStyle='#ffd24a'; ctx.stroke(); }
+    else { ctx.beginPath(); ctx.arc(p.x, p.y, cv.width*0.018, 0, 7); ctx.fillStyle='#ffd24a'; ctx.fill(); }
   }
   for (const p of particles){ p.x+=p.vx; p.y+=p.vy; p.vy+=0.25; p.life-=0.04; }
   particles = particles.filter(p=>p.life>0);
@@ -189,8 +182,8 @@ async function start(){
   startBtn.disabled = true; setStatus('카메라 켜는 중...');
   try { if (!video.srcObject) await setupCamera(); }
   catch(e){ setStatus('카메라를 못 켰어요 — 권한 허용 + https 필요. ('+e.name+')'); startBtn.disabled=false; return; }
-  if (!detector){ setStatus('손 인식 AI 로딩 중... (몇 초)'); try { await loadModel(); } catch(e){ setStatus('AI 로딩 실패 — 인터넷 확인'); startBtn.disabled=false; return; } }
-  score=0; timeLeft=60; moles=[]; particles=[]; lastSpawn=0; spawnGap=1100;
+  if (!detector){ setStatus('손 인식 AI 로딩 중... (몇 초)'); try { await loadModel(); } catch(e){ setStatus('AI 로딩 실패: '+(e.message||e)); startBtn.disabled=false; return; } }
+  score=0; timeLeft=60; moles=[]; particles=[]; lastSpawn=0; spawnGap=1100; lastT=0;
   scoreEl.textContent=0; timeEl.textContent=60;
   overlay.classList.add('hide'); startBtn.disabled=false;
   running = true; requestAnimationFrame(loop);

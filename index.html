@@ -103,12 +103,17 @@ function spawnMole(){
   });
 }
 
-// 손목(좌/우) 위치 — 화면은 거울이라 x 미러링
+// 손(좌/우) 위치 — 손목점이 아니라 팔꿈치→손목 방향으로 *손끝*까지 연장(자연스러운 타격)
 function getHands(kps){
   const hands = [];
-  for (const i of [9, 10]) {
-    const k = kps[i];
-    if (k && k.score > 0.3) hands.push({ x: cv.width - k.x, y: k.y });
+  const ARMS = [[7, 9], [8, 10]];   // [팔꿈치, 손목] 좌/우
+  const EXT = 0.65;                 // 손목 너머 손/손끝 쪽으로 연장 비율
+  for (const [ei, wi] of ARMS) {
+    const w = kps[wi], e = kps[ei];
+    if (!w || w.score < 0.3) continue;
+    let hx = w.x, hy = w.y;
+    if (e && e.score > 0.3) { hx = w.x + (w.x - e.x) * EXT; hy = w.y + (w.y - e.y) * EXT; }
+    hands.push({ x: cv.width - hx, y: hy });   // 거울 x 미러링
   }
   return hands;
 }
@@ -147,7 +152,7 @@ async function loop(){
     // 손 충돌
     if (!m.hit){
       for (const h of hands){
-        if (Math.hypot(h.x-m.x, h.y-m.y) < m.r*Math.max(.5,m.scale) + cv.width*0.04){
+        if (Math.hypot(h.x-m.x, h.y-m.y) < m.r*Math.max(.5,m.scale) + cv.width*0.055){
           m.hit = true; m.dead = true; score++; scoreEl.textContent = score;
           pop(m.x, m.y); break;
         }
@@ -165,7 +170,7 @@ async function loop(){
   }
   // 5) 손 마커
   for (const h of hands){
-    ctx.beginPath(); ctx.arc(h.x, h.y, cv.width*0.045, 0, 7);
+    ctx.beginPath(); ctx.arc(h.x, h.y, cv.width*0.055, 0, 7);
     ctx.fillStyle='rgba(255,210,74,.35)'; ctx.fill();
     ctx.lineWidth=4; ctx.strokeStyle='#ffd24a'; ctx.stroke();
   }
